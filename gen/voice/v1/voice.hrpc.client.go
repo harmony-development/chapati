@@ -1,13 +1,12 @@
 package v1
 
-import (
-	"bytes"
-	"fmt"
-	"io/ioutil"
-	"net/http"
-
-	"google.golang.org/protobuf/proto"
-)
+import "net/http"
+import "google.golang.org/protobuf/proto"
+import "io/ioutil"
+import "fmt"
+import "github.com/gorilla/websocket"
+import "net/url"
+import "bytes"
 
 type VoiceServiceClient struct {
 	client    *http.Client
@@ -59,5 +58,59 @@ func (client *VoiceServiceClient) Connect(r *ConnectRequest) (*ConnectResponse, 
 }
 
 func (client *VoiceServiceClient) StreamState(r *StreamStateRequest) (chan *Signal, error) {
-	panic("unimplemented")
+	u := url.URL{Scheme: client.WSProto, Host: client.serverURL, Path: "/protocol.voice.v1.VoiceService/StreamState"}
+
+	c, _, err := websocket.DefaultDialer.Dial(u.String(), client.Header)
+	if err != nil {
+		return nil, err
+	}
+
+	data, err := proto.Marshal(r)
+	if err != nil {
+		return nil, err
+	}
+
+	err = c.WriteMessage(websocket.BinaryMessage, data)
+	if err != nil {
+		return nil, err
+	}
+
+	outC := make(chan *Signal)
+
+	go func() {
+		defer c.Close()
+
+		msgs := make(chan []byte)
+
+		go func() {
+			for {
+				_, message, err := c.ReadMessage()
+				if err != nil {
+					close(msgs)
+					break
+				}
+				msgs <- message
+			}
+		}()
+
+		defer close(outC)
+		for {
+			select {
+			case msg, ok := <-msgs:
+				if !ok {
+					return
+				}
+
+				thing := new(Signal)
+				err = proto.Unmarshal(msg, thing)
+				if err != nil {
+					return
+				}
+
+				outC <- thing
+			}
+		}
+	}()
+
+	return outC, nil
 }
